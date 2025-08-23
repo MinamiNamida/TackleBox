@@ -1,151 +1,165 @@
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use tokio::sync::mpsc::Sender;
-use uuid::Uuid;
 
 
-pub type Response<T> = Result<T, String>;
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResponseError {
+    // pub code: u16,
+    pub message: String,
+}
 
-// ======= 用户层面 =======
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Target {
-    /// UserWs层面
-    User { user_id: Uuid },
-    /// Client层面
-    Client { user_id: Uuid },
-    /// 针对平台级操作（比如匹配、查看房间列表）
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub enum Endpoint {
+    User, 
+    Client { username: Option<String> },
     Platform,
-    /// 针对某个房间
-    Room { room_id: Uuid },
-    /// 针对某个游戏
-    Game { room_id: Uuid },
+    Room { room_name: String },
+    Game { room_name: String },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum UserCommand {
-    // ===== 消息层 =====
-    Talk { user_id: Uuid, msg: String },
     Ping,
-    Pong,
+    Register { username: String, password: String },
+    Login { username: String, password: String } ,
+    Logout,
+
+    UpdateUserInfo(UserInfo),
+    GetUserInfo,
+    SendMessage { username: String, msg: String },
+
+    JoinRoom { room_name: String } ,
+    LeaveRoom { room_name: String },
+    CreateRoom { room_name: String },
+    GetRooms,
+    // GetUserList { room_name: String },
+    SetRoomInfo(RoomInfo),
+    GetRoomInfo { room_name: String },
+    // KickUser { room_name: String, username: String },
+
+    SetGameInfo { room_name: String, game_info: GameInfo } ,
+    GetGameInfo { room_name: String },
+    SetGameReady { room_name: String, ready: bool },
+    SendGameData { room_name: String, data: Value },
+    GetGameData { room_name: String },
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum UserResponse {
+    Inited,
     Close,
-    GetClientInfo,
-
-    // ===== 平台级 =====
-    JoinRoom { room_id: Uuid } ,
-    LeaveRoom { room_id: Uuid },
-    CreateRoom,
-    ListRooms,
-    HasJoinedRooms,
-
-    // ===== 房间级 =====
-
-    ChooseGame { room_id: Uuid, name: String } ,
-    RoomInfo { room_id: Uuid},
-    Ready { room_id: Uuid, yes: bool },
-
-    // ===== 游戏级 =====
-    GameAction { room_id: Uuid, data: Value },
-}
-
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserResponse {
-    pub from: Target,
-    pub payload: Response<ResponsePayload>,
-    pub timestamp: DateTime<Utc>
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ResponsePayload {
-    // ===== 消息层 =====
-    Talk { msg: String },
     Pong,
-    RegisterSuccess,
-    ClientInfo { info: ClientInfo } ,
+    Registration { username: String },
+    Login(UserInfo),
+    Logout,
 
-    // ===== 平台级 =====
-    JoinRoom,
-    LeaveRoom,
-    CreateRoom { room_id: Uuid },
-    ListRooms { rooms_id: Vec<Uuid> },
-    HasJoinedRooms { rooms_id: Vec<Uuid> },
+    UserInfo(UserInfo),
+    RecvMessage { username: String, msg: String },
 
-    // ===== 房间级 =====
-    ChooseGame,
-    RoomInfo,
-    Ready,
+    JoinedRoom(RoomInfo),
+    LeftRoom { room_name: String },
+    RoomCreated(RoomInfo),
+    RoomList { rooms: Vec<RoomInfo> },
+    RoomInfo(RoomInfo),
+    UserKicked { room_name: String, username: String },
 
-    // ===== 游戏级 =====
-    GameAction { data: Value },
-    GameStart,
-    GameFinish
+    GameInfo(GameInfo),
+    GameReady { room_name: String, ready: bool },
+    GameData { data: Value },
+    GameStarted { room_name: String },
+    GameEnded { room_name: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub enum SystemCommand {
+    Login { username: String, password: String, tx: Sender<ServerMessage> } ,
+    Register { username: String, password: String, tx: Sender<ServerMessage> },
+    EnterGame { username: String, tx: Sender<ServerMessage> },
+    // Unregister { username: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum SystemResponse {
+    GameStart { room_name: String, game_tx: Sender<ServerMessage> },
+    GameOver
+}
+
+#[derive(Debug, Clone)]
 pub struct ServerMessage {
-    pub from: Target,
-    pub to: Target,
-    pub payload: Result<ServerCommand, String>,
-    pub timestamp: DateTime<Utc>
+    pub from: Endpoint,
+    pub to: Endpoint,
+    pub payload: ServerPayload,
+    pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug)]
-pub enum ServerCommand {
-    RegisterClient { user_id: Uuid, tx: Sender<ServerMessage> },
-    ResponseRegisterClient { } ,
-
-    UnregisterClient { user_id: Uuid },
-    ResponseUnregisterClient,
-    
-    CreateRoom,
-    ResponseCreateRoom { room_id: Uuid, tx: Sender<ServerMessage> },
-
-    ListRooms,
-    ResponseListRooms { rooms_id: Vec<Uuid> },
-
-    GetRoom { room_id: Uuid },
-    ResponseGetRoom { room_id: Uuid, tx: Sender<ServerMessage> },
-
-    UserMessage { msg: UserResponse },
-
-    RoomTerminal,
-
-    ChooseGame { name: String },
-    ResponseChooseGame { },
-
-    GameAction { user_id: Uuid, data: Value },
-    ResponseGameAction { user_id: Uuid,  data: Value },
-
-    RoomReady { yes: bool },
-    ResponseRoomReady {},
-
-    RequestRoomInfo { },
-    ResponseRequestRoomInfo {},
-
-    GameStart {},
-    GameFinish {},
-
-
+#[derive(Debug, Clone)]
+pub enum SystemMessage {
+    Command(SystemCommand),
+    Response(SystemResponse),
+    Error(ResponseError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ClientInfo {
-    pub user_id: Uuid,
-    pub connected_rooms: Vec<Uuid>,
-    pub create_at: DateTime<Utc>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UserMessage {
+    Command(UserCommand),
+    Response(UserResponse),
+    Error(ResponseError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+pub enum ServerPayload {
+    System(SystemMessage),
+    User(UserMessage),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserInfo {
+    pub username: String,
+    pub avatar: Option<String>,
+    pub stats: UserStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub enum UserStatus {
+    Offline,       // 不在线
+    Online,        // 已连接但未加入房间
+    InRoom,        // 已加入房间，但未进入游戏
+    InGame,        // 正在游戏中
+    Custom(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Room {
+    pub room_info: RoomInfo,
+    pub game_info: GameInfo,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RoomInfo {
-    pub room_id: Uuid,
-    pub connected_players: Vec<Uuid>,
-    pub create_at: DateTime<Utc>,
+    pub room_name: String,
+    pub max_user_count: usize,
+    pub password_hash: Option<String>,
+    pub users: HashMap<String, bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GameInfo {
-    pub name: String,
+    pub room_name: String,
+    pub game_name: String,
+    pub game_status: GameStatus,
+    pub settings: Option<Value> ,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub enum GameStatus {
+    Waiting,
+    Running,
+    Ended,
 }
