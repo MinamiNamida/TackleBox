@@ -101,7 +101,7 @@ impl Platform {
                     },
                     SystemMessage::Response(resp) => {
                         match resp {
-                            SystemResponse::GameOver => {
+                            SystemResponse::GameEnded => {
                                 let Endpoint::Game { room_name } = from else {
                                     return Err("error game over input".to_string());
                                 };

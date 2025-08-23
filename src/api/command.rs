@@ -88,7 +88,7 @@ pub enum SystemCommand {
 #[derive(Debug, Clone)]
 pub enum SystemResponse {
     GameStart { room_name: String, game_tx: Sender<ServerMessage> },
-    GameOver
+    GameEnded
 }
 
 #[derive(Debug, Clone)]

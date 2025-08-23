@@ -63,5 +63,14 @@ impl MsgGen {
             timestamp: Utc::now(),
         }
     }
+
+    pub fn from_payload(&self, to: Endpoint, payload: ServerPayload) -> ServerMessage {
+        ServerMessage {
+            from: self.from.clone(),
+            to,
+            payload,
+            timestamp: Utc::now(),
+        }
+    }
     
 }
