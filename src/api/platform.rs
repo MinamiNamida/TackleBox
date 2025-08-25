@@ -1,14 +1,22 @@
-use std::{collections::HashMap};
+use std::{collections::HashMap, time::Duration};
 
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait, QueryFilter};
 use tokio::sync::{mpsc, oneshot};
 
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2
 };
-use tracing::debug;
+use tracing::{debug, error};
 
-use crate::api::{command::{Endpoint, GameInfo, GameStatus, ResponseError, Room, RoomInfo, ServerMessage, ServerPayload, SystemCommand, SystemMessage, SystemResponse, UserCommand, UserInfo, UserMessage, UserResponse, UserStatus}, game::{self, GameFactory}, utils::MsgGen};
+use crate::api::{
+    command::{Endpoint, GameInfo, GameStatus, ResponseError, Room, RoomInfo, 
+        ServerMessage, ServerPayload, SystemCommand, SystemMessage, 
+        SystemResponse, UserCommand, UserInfo, 
+        UserMessage, UserResponse, UserStatus
+    }, entities::{ User, UserCol, UserAclModel}, game::GameFactory, utils::MsgGen
+    
+};
 
 pub struct PlatformChannels {
     rx: mpsc::Receiver<ServerMessage>,
@@ -25,16 +33,27 @@ pub struct Platform {
     users_to_rooms: HashMap<String, Vec<String>>,
     rooms: HashMap<String, Room>,
     msg_gen: MsgGen,
-    users: HashMap<String, UserInfo>
+    // users: HashMap<String, UserInfo>,
+
+    db_connector: DatabaseConnection,
 }
 
 impl Platform {
 
-    pub fn new() -> Self {
+    pub async fn new() -> Result<Self, String> {
         let (tx, rx) = mpsc::channel(1024);
         let (finish_tx, finish_rx) = oneshot::channel();
         let msg_gen = MsgGen::new(Endpoint::Platform);
-        Platform { 
+
+        let mut opt = ConnectOptions::new("postgres://postgres:password@localhost/tacklebox");
+        opt.max_connections(100)                
+            .min_connections(5)               
+            .connect_timeout(Duration::from_secs(8))
+            .idle_timeout(Duration::from_secs(600))
+            .sqlx_logging(true);              
+        let db_connector = Database::connect(opt).await.map_err(|e| e.to_string())?;
+
+        let platform = Platform { 
             channels: PlatformChannels {
                 rx,
                 replicated_tx: tx,
@@ -44,17 +63,23 @@ impl Platform {
                 finish_rx,
             },
             users_to_rooms: HashMap::new(),
-            users: HashMap::new(),
+            // users: HashMap::new(),
             rooms: HashMap::new(),
             msg_gen,
-        }
+            db_connector,
+            // argon2: Argon2::default(),
+        };
+        Ok(platform)
     }
+
+
 
     pub fn replicated_tx(&self) -> mpsc::Sender<ServerMessage> {
         self.channels.replicated_tx.clone()
     }
 
     pub async fn run(&mut self) {
+        
         loop {
             let r= tokio::select! {
                 Some(msg) = self.channels.rx.recv() => self._handle_server_msg(msg).await,
@@ -78,20 +103,49 @@ impl Platform {
                     SystemMessage::Command(cmd) => {
                         match cmd {
                             SystemCommand::Login { username, password, tx } => {
-                                debug!("recv login request from {}", username);
-                                let Some(user_info) = self.users.get(&username) else {
-                                    return Err("this usr did not register".to_string())
+                                
+                                // let Some(user_info) = self.users.get(&username) else {
+                                //     return Err("this usr did not register".to_string())
+                                // };
+
+                                let Ok(Some(user)) = User::find().filter(UserCol::Username.eq(&username)).one(&self.db_connector).await else {
+                                    return Err("no exist username or did not register".to_string());
                                 };
-                                self.channels.user_txs.insert(username.clone(), tx);
-                                self.msg_gen.user_response(Endpoint::Client { username: Some(username) }, UserResponse::Login(user_info.clone()))
+
+                                let parsed_hash = PasswordHash::new(&user.password_hash).map_err(|e|e .to_string())?;
+                                if  Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok() {
+                                    self.channels.user_txs.insert(username.clone(), tx);
+                                    let user_info = UserInfo {
+                                        username: username.clone(),
+                                        stats: UserStatus::Online,
+                                    };
+                                    self.msg_gen.user_response(Endpoint::Client { username: Some(username) }, UserResponse::Login(user_info))
+                                } else {
+                                    return Err("no exist username".to_string());   
+                                }
                             }
                             SystemCommand::Register { username, password, tx } => {
-                                self.users.insert(
-                                    username.clone(), 
-                                    UserInfo { username: username.clone(), avatar: None, stats: UserStatus::Offline }
-                                );
+                                if let Ok(Some(_)) = User::find().filter(UserCol::Username.eq(&username)).one(&self.db_connector).await {
+                                    return Err("exist same username".to_string())
+                                };
+                                let salt = SaltString::generate(&mut OsRng);
+                                let argon2 = Argon2::default();
+                                let password_hash = argon2.hash_password(password.as_bytes(), &salt).unwrap().to_string();
+
+                                let new_user = UserAclModel {
+                                    username: Set(username.clone()),
+                                    password_hash: Set(password_hash),
+                                };
+
+                                let inserted = new_user.insert(&self.db_connector).await.map_err(|e| e.to_string())?;
+
+                                // self.users.insert(
+                                //     username.clone(), 
+                                //     UserInfo { username: username.clone(), avatar: None, stats: UserStatus::Offline }
+                                // );
+
                                 let msg = self.msg_gen.user_response(from, UserResponse::Registration { username });
-                                tx.send(msg).await.map_err(|e| e.to_string());
+                                tx.send(msg).await.map_err(|e| e.to_string())?;
                                 return Ok(())
                             }
                             _ => {
@@ -142,25 +196,32 @@ impl Platform {
                                 msg
                             }
                             UserCommand::UpdateUserInfo(user_info) => {
-                                if let Some(info) = self.users.get_mut(username) {
-                                    *info = user_info;
-                                    let response = self.msg_gen.user_response(
-                                        Endpoint::Client { username: Some(username.clone()) }, 
-                                        UserResponse::UserInfo(info.clone())   
-                                    );
-                                    response
-                                } else {
-                                    return Err("nofound user info".to_string())
-                                }
+                                let Ok(Some(user)) = User::find().filter(UserCol::Username.eq(username)).one(&self.db_connector).await else {
+                                    return Err("no exist username or did not register".to_string());
+                                };
+
+                                // let mut act_user: UserAtcModle = user.into();
+                                // act_user.
+                                
+
+                                // if let Some(info) = self.users.get_mut(username) {
+                                //     *info = user_info;
+                                let response = self.msg_gen.user_response(
+                                    Endpoint::Client { username: Some(username.clone()) }, 
+                                    UserResponse::UserInfo(user_info)   
+                                );
+                                response
+                                // } else {
+                                //     return Err("nofound user info".to_string())
+                                // }
                             }
                             UserCommand::GetUserInfo => {
-                                if let Some(user_info) = self.users.get(username) {
-                                    self.msg_gen.user_response(Endpoint::Client { username: Some(username.clone()) },
-                                    UserResponse::UserInfo(user_info.clone())
-                                    )
-                                } else {
-                                    return Err("no found user info".to_string())
-                                }
+                                let Ok(Some(user)) = User::find().filter(UserCol::Username.eq(username)).one(&self.db_connector).await else {
+                                    return Err("no exist username or did not register".to_string());
+                                };
+                                self.msg_gen.user_response(Endpoint::Client { username: Some(username.clone()) },
+                                    UserResponse::UserInfo(UserInfo { username: user.username, stats: UserStatus::Online })
+                                )
                             }
 
                             UserCommand::JoinRoom { room_name } => {

@@ -6,13 +6,8 @@ use serde_json::Value;
 use tokio::{sync::{mpsc::{self, Receiver, Sender}, oneshot}, task::JoinHandle, time::timeout};
 use tracing::{debug, error};
 
-use crate::api::{command::{Endpoint, GameInfo, ResponseError, Room, RoomInfo, ServerMessage, ServerPayload, SystemCommand, SystemMessage, SystemResponse, UserCommand, UserMessage, UserResponse}, utils::MsgGen};
+use crate::api::{command::{Endpoint, GameInfo, ResponseError, Room, RoomInfo, ServerMessage, ServerPayload, SystemCommand, SystemMessage, SystemResponse, UserCommand, UserMessage, UserResponse}, entities::GameState, utils::MsgGen};
 
-
-// #[async_trait]
-// pub trait Game : Send {
-//     async fn run(&mut self);
-// }
 
 pub struct GameFactory {}
 
@@ -48,6 +43,7 @@ pub enum GameInput {
 pub enum GameOutput {
     ToUser { username: String, data: Value },
     Broadcast { data: Value },
+    GameState { data: Value },
     Finish,
 }
 
@@ -176,6 +172,7 @@ impl<L: GameLogic> GameRunner<L> {
                     return Err("unexpect error for finish tx not exist".to_string())
                 }
             }
+            GameOutput::GameState { data: _ }  => {}
         }
         Ok(())
     }
@@ -210,6 +207,11 @@ impl<L: GameLogic> GameRunner<L> {
         let to = Endpoint::Client { username: Some(username) };
         let game_msg = self.msg_gen.from_payload(to, payload);
         tx.send(game_msg).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn _update_loggers(&self) -> Result<(), String> {
+        
         Ok(())
     }
 

@@ -1,8 +1,8 @@
 use axum::{
-    extract::{ws::{WebSocket, WebSocketUpgrade}, State}, response::{IntoResponse, Response}, routing::any, Router
+    extract::{ws::{WebSocket, WebSocketUpgrade}, State}, response::{IntoResponse}, routing::any, Router
 };
 use tokio::sync::mpsc::Sender;
-use futures_util::{ stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
+use futures_util::{StreamExt};
 use tracing::{debug, info};
 use crate::api::{client::Client, command::ServerMessage, platform::Platform};
 
@@ -30,15 +30,15 @@ pub struct App {
 
 impl App {
 
-    pub fn new() -> Self {
-        let mut platform = Platform::new();
+    pub async fn new() -> Result<Self, String> {
+        let mut platform = Platform::new().await?;
         let tx = platform.replicated_tx().clone();
 
         tokio::spawn(async move {
             platform.run().await;
         });
 
-        Self { platform_tx: tx }
+        Ok(Self { platform_tx: tx })
     }
 
     pub async fn run(&mut self) {

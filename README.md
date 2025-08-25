@@ -10,6 +10,53 @@
 - 将 Platform、Room、Game 三层进行职责分离，便于扩展自定义游戏逻辑与自动化 agent 客户端接入
 - 提供在服务器端的 agent 输入与 game 状态存储
 
+## Database
+```mermaid
+erDiagram
+    USER {
+        string username PK
+        string password_hash
+        string email
+    }
+
+    GAMETYPE {
+        int id PK
+        string name
+        string description
+    }
+
+    GAME {
+        int id PK
+        string created_at
+        string status
+        int gametype_id FK
+    }
+
+    GAMESTATE {
+        int id PK
+        int game_id FK
+        string state_data
+        string timestamp
+    }
+
+    GAMEINPUT {
+        int id PK
+        string username FK
+        int game_id FK
+        int state_id FK
+        string input_data
+        string timestamp
+    }
+
+    %% 关系定义
+    USER ||--o{ GAMEINPUT : "makes"
+    GAMETYPE ||--o{ GAME : "defines"
+    GAME ||--o{ GAMESTATE : "has"
+    GAME ||--o{ GAMEINPUT : "receives"
+    GAMESTATE ||--o{ GAMEINPUT : "linked_with"
+
+```
+
 ## Test
 提供简易测试, 默认运行在3000端口. "dummy_game"会在第四次输入时结束游戏并告知room和player.
 

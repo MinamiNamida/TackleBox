@@ -122,7 +122,6 @@ pub enum ServerPayload {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserInfo {
     pub username: String,
-    pub avatar: Option<String>,
     pub stats: UserStatus,
 }
 
