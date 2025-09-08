@@ -1,29 +1,41 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, error::Error, time::Duration};
 
 use async_trait::async_trait;
+use chrono::{NaiveDateTime, Utc};
+use entity::{GameAclModel, GameInputAclModel, GameParticipantAclModel, GameStateAclModel};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection, EntityTrait};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{sync::{mpsc::{self, Receiver, Sender}, oneshot}, task::JoinHandle, time::timeout};
 use tracing::{debug, error};
+use uuid::Uuid;
 
-use crate::api::{command::{Endpoint, GameInfo, ResponseError, Room, RoomInfo, ServerMessage, ServerPayload, SystemCommand, SystemMessage, SystemResponse, UserCommand, UserMessage, UserResponse}, entities::GameState, utils::MsgGen};
+use crate::api::{
+    command::{
+        Endpoint, GameInfo, ResponseError, Room, RoomInfo, 
+        ServerMessage, ServerPayload, SystemCommand, SystemMessage, 
+        SystemResponse, UserCommand, UserMessage, UserResponse
+    }, 
+    utils::MsgGen
+};
+
 
 
 pub struct GameFactory {}
 
 impl GameFactory {
-    pub fn new(room: Room, platform_tx: Sender<ServerMessage>) -> Result<(Sender<ServerMessage>, JoinHandle<()>), String> {
+    pub async fn new(room: Room, platform_tx: Sender<ServerMessage>, db: DatabaseConnection) -> Result<(Sender<ServerMessage>, JoinHandle<()>), Box<dyn Error>> {
         let (tx, rx) = mpsc::channel(8);
         let game_name = &room.game_info.game_name;
 
         let mut game_runner = match game_name.as_str() {
             "dummy_game" => {
-                let logic = DummyLogic::new(room.game_info.settings.clone()).unwrap();
-                let game_runner = GameRunner::new(rx, tx.clone(), platform_tx, room, logic);
+                let logic = DummyLogic::new(room.game_info.settings.clone())?;
+                let game_runner = GameRunner::new(rx, tx.clone(), platform_tx, room, logic, db).await?;
                 game_runner
             }
             _ => {
-                return Err("error game info".to_string());
+                return Err("error game info".into());
             }
         };
 
@@ -35,16 +47,27 @@ impl GameFactory {
     }
 }
 
-pub enum GameInput {
-    UserInput { username: String, data: Value,} ,
-    // Setting { setting: Value }
+#[derive(Clone, Serialize)]
+pub struct GameInput {
+    username: String, 
+    data: Value,
 }
 
-pub enum GameOutput {
+
+pub struct GameOutput {
+    game_state: GameState,
+    game_message: Vec<GameMessage>,
+}
+
+pub enum GameMessage {
     ToUser { username: String, data: Value },
     Broadcast { data: Value },
-    GameState { data: Value },
     Finish,
+}
+
+#[derive(Serialize)]
+pub struct GameState {
+    state: Value
 }
 
 struct GameChannels {
@@ -58,24 +81,60 @@ struct GameChannels {
 
 #[async_trait]
 pub trait GameLogic: Send {
-    async fn on_event(&mut self, input: GameInput) -> Result<Vec<GameOutput>, String>;
+    fn game_type(&self) -> String;
+    async fn on_event(&mut self, input: GameInput) -> Result<GameOutput, String>;
+    async fn state(&self) -> GameState;
+    
 }
 
 
 pub struct GameRunner<L: GameLogic> {
+    id: Uuid, 
     room_name: String,
     users: HashMap<String, bool>,
     channels: GameChannels,
     logic: L,
     msg_gen: MsgGen,
+    // logger: GameLogger,
+    db: DatabaseConnection
 }
 
 impl<L: GameLogic> GameRunner<L> {
-    fn new(rx: Receiver<ServerMessage>, tx: Sender<ServerMessage>, platform_tx: Sender<ServerMessage>, room: Room, logic: L) -> Self {
+
+
+    async fn new(
+        rx: Receiver<ServerMessage>, 
+        tx: Sender<ServerMessage>, 
+        platform_tx: Sender<ServerMessage>, 
+        room: Room, 
+        logic: L, 
+        db: DatabaseConnection
+    ) -> Result<Self, Box<dyn Error>> {
+
         let RoomInfo { room_name, users , ..} = room.room_info;
         let (finish_tx, finish_rx) = oneshot::channel();
+        let id = Uuid::new_v4();
 
-        Self { 
+        // game have a unique uuid for database insert.
+        let game_data = GameAclModel {
+            id: Set(id),
+            game_type: Set(logic.game_type()),
+            created_at: Set(Utc::now()),
+        };
+        game_data.insert(&db).await?;
+
+        for user in users.keys() {
+            let participant = GameParticipantAclModel {
+                id: Set(Uuid::new_v4()),
+                game_id: Set(id),
+                username: Set(user.clone()),
+                joined_at: Set(Utc::now())
+            };
+            participant.insert(&db).await?;
+        }
+
+        let game = Self { 
+            id,
             room_name: room_name.clone(), 
             users: users.into_iter().map(|(user, _)| (user, false)).collect(), 
             channels: GameChannels { 
@@ -88,9 +147,15 @@ impl<L: GameLogic> GameRunner<L> {
                 users_tx: HashMap::new() 
             }, 
             logic, 
-            msg_gen: MsgGen::new(Endpoint::Game { room_name }) 
-        }
+            msg_gen: MsgGen::new(Endpoint::Game { room_name }),
+            db,
+        };
+
+        Ok(game)
+
     }
+
+
     async fn _wait_users_init(&mut self) -> Result<(), String> {
         if let Err(_) = timeout(Duration::from_secs(30), async {
             while !self.users.values().all(|&v| v) {
@@ -132,20 +197,41 @@ impl<L: GameLogic> GameRunner<L> {
                     };
                     let payload = msg.payload;
                     let ServerPayload::User(UserMessage::Command(UserCommand::SendGameData { room_name: _, data })) = payload else {
+                        // TODO: need tells User that give a error input to game.
                         continue;
                     };
-                    match self.logic.on_event(GameInput::UserInput { username: username.clone(), data }).await {
-                        Ok(outputs) => {
-                            for output in outputs {
-                                self._process_game_output(output).await;
+                    let game_input = GameInput { username: username.clone(), data: data.clone() };
+
+                    match self.logic.on_event(game_input).await {
+                        Ok(GameOutput{ game_state , game_message }) => {
+                            let input_id = Uuid::new_v4();
+                            let input_data = GameInputAclModel {
+                                id: Set(input_id),
+                                game_id: Set(self.id),
+                                username: Set(username.clone()),
+                                data: Set(data),
+                                created_at: Set(Utc::now())
+                            };         
+                            let GameState { state: game_state } = game_state;               
+                            let state_data = GameStateAclModel {
+                                id: Set(Uuid::new_v4()),
+                                input_id: Set(input_id),
+                                game_id: Set(self.id),
+                                data: Set(game_state),
+                                created_at: Set(Utc::now())
+                            };
+                            let _ = input_data.insert(&self.db).await;
+                            let _ = state_data.insert(&self.db).await;
+                            for msg in game_message {
+                                self._process_game_message(msg).await;
                             }
+
                         }
                         Err(e) => {
                             let payload = ServerPayload::User(UserMessage::Error( ResponseError { message: e } ));
                             self._send_user(username.clone(), payload).await;
                         }
                     }
-
                 }
                 _ = &mut self.channels.finish_rx => {
                     self._game_ended().await;
@@ -155,24 +241,23 @@ impl<L: GameLogic> GameRunner<L> {
         }
     }
 
-    async fn _process_game_output(&mut self, output: GameOutput) -> Result<(), String> {
-        match output {
-            GameOutput::ToUser { username, data } => {
+    async fn _process_game_message(&mut self, message: GameMessage) -> Result<(), String> {
+        match message {
+            GameMessage::ToUser { username, data } => {
                 let payload = ServerPayload::User(UserMessage::Response(UserResponse::GameData { data }));
                 self._send_user(username, payload).await?;
             }
-            GameOutput::Broadcast { data } => {
+            GameMessage::Broadcast { data } => {
                 let payload = ServerPayload::User(UserMessage::Response(UserResponse::GameData { data }));
                 self._broadcast(payload).await?;
             }
-            GameOutput::Finish => {
+            GameMessage::Finish => {
                 if let Some(finish_tx) = self.channels.finish_tx.take() {
                     finish_tx.send(());
                 } else {
                     return Err("unexpect error for finish tx not exist".to_string())
                 }
             }
-            GameOutput::GameState { data: _ }  => {}
         }
         Ok(())
     }
@@ -210,13 +295,9 @@ impl<L: GameLogic> GameRunner<L> {
         Ok(())
     }
 
-    async fn _update_loggers(&self) -> Result<(), String> {
-        
-        Ok(())
-    }
-
-
 }
+
+
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum DummyGameCommand {
@@ -241,33 +322,39 @@ impl DummyLogic {
 
 #[async_trait]
 impl GameLogic for DummyLogic {
-    async fn on_event(&mut self, input: GameInput) -> Result<Vec<GameOutput>, String> {
-        let mut outputs = vec![];
-        match input {
-            GameInput::UserInput { username, data } => {
-                let cmd = serde_json::from_value::<DummyGameCommand>(data).map_err(|e| e.to_string())?;
-                match cmd {
-                    DummyGameCommand::Str(s) => {
-                        let resp = serde_json::json!(s + " hello");
-                        outputs.push(GameOutput::ToUser { username, data: resp });
-                        self.try_times += 1;
-                    }
-                    DummyGameCommand::Number(n) => {
-                        let resp = serde_json::json!(n + 1);
-                        outputs.push(GameOutput::ToUser { username, data: resp });
-                        self.try_times += 1;
-                    }
-                }
+    async fn on_event(&mut self, input: GameInput) -> Result<GameOutput, String> {
+        let mut game_message = vec![];
+        let GameInput { username, data } = input;
+
+        let cmd = serde_json::from_value::<DummyGameCommand>(data).map_err(|e| e.to_string())?;
+        match cmd {
+            DummyGameCommand::Str(s) => {
+                let resp = serde_json::json!(s + " hello");
+                game_message.push(GameMessage::ToUser { username, data: resp });
+                self.try_times += 1;
             }
-            // GameInput::System(cmd) => {
-            //     debug!("system event: {:?}", cmd);
-            // }
+            DummyGameCommand::Number(n) => {
+                let resp = serde_json::json!(n + 1);
+                game_message.push(GameMessage::ToUser { username, data: resp });
+                self.try_times += 1;
+            }   
         }
 
         if self.try_times >= self.max_try_times {
-            outputs.push(GameOutput::Finish);
+            game_message.push(GameMessage::Finish);
         }
+        let game_state = self.state().await;
+        
+        Ok(GameOutput { game_message, game_state })
+    }
 
-        Ok(outputs)
+    async fn state(&self) -> GameState {
+        GameState { state: serde_json::json!({
+            "try_times": self.try_times
+        }) }
+    }
+    
+    fn game_type(&self) -> String {
+        "dummy_game".to_string()
     }
 }

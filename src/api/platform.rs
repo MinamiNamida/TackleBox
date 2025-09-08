@@ -1,5 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
+use chrono::Utc;
+use entity::{User, UserAclModel, UserCol};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectOptions, Database, DatabaseConnection, EntityTrait, QueryFilter};
 use tokio::sync::{mpsc, oneshot};
 
@@ -10,12 +12,14 @@ use argon2::{
 use tracing::{debug, error};
 
 use crate::api::{
-    command::{Endpoint, GameInfo, GameStatus, ResponseError, Room, RoomInfo, 
-        ServerMessage, ServerPayload, SystemCommand, SystemMessage, 
-        SystemResponse, UserCommand, UserInfo, 
+    command::{
+        Endpoint, GameInfo, GameStatus, ResponseError, Room,  
+        RoomInfo, ServerMessage, ServerPayload, SystemCommand, 
+        SystemMessage, SystemResponse, UserCommand, UserInfo, 
         UserMessage, UserResponse, UserStatus
-    }, entities::{ User, UserCol, UserAclModel}, game::GameFactory, utils::MsgGen
-    
+    }, 
+    game::GameFactory, 
+    utils::MsgGen
 };
 
 pub struct PlatformChannels {
@@ -63,11 +67,9 @@ impl Platform {
                 finish_rx,
             },
             users_to_rooms: HashMap::new(),
-            // users: HashMap::new(),
             rooms: HashMap::new(),
             msg_gen,
             db_connector,
-            // argon2: Argon2::default(),
         };
         Ok(platform)
     }
@@ -104,16 +106,15 @@ impl Platform {
                         match cmd {
                             SystemCommand::Login { username, password, tx } => {
                                 
-                                // let Some(user_info) = self.users.get(&username) else {
-                                //     return Err("this usr did not register".to_string())
-                                // };
-
+                                // check if exitst a user with given username in database
                                 let Ok(Some(user)) = User::find().filter(UserCol::Username.eq(&username)).one(&self.db_connector).await else {
                                     return Err("no exist username or did not register".to_string());
                                 };
 
+                                // calculate the hash for given password, and verify it.
                                 let parsed_hash = PasswordHash::new(&user.password_hash).map_err(|e|e .to_string())?;
                                 if  Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok() {
+                                    // only when login successful can platform save channels.
                                     self.channels.user_txs.insert(username.clone(), tx);
                                     let user_info = UserInfo {
                                         username: username.clone(),
@@ -135,14 +136,11 @@ impl Platform {
                                 let new_user = UserAclModel {
                                     username: Set(username.clone()),
                                     password_hash: Set(password_hash),
+                                    created_at: Set(Utc::now())
                                 };
 
-                                let inserted = new_user.insert(&self.db_connector).await.map_err(|e| e.to_string())?;
-
-                                // self.users.insert(
-                                //     username.clone(), 
-                                //     UserInfo { username: username.clone(), avatar: None, stats: UserStatus::Offline }
-                                // );
+                                // user can register for this useranme;
+                                let _ = new_user.insert(&self.db_connector).await.map_err(|e| e.to_string())?;
 
                                 let msg = self.msg_gen.user_response(from, UserResponse::Registration { username });
                                 tx.send(msg).await.map_err(|e| e.to_string())?;
@@ -200,20 +198,11 @@ impl Platform {
                                     return Err("no exist username or did not register".to_string());
                                 };
 
-                                // let mut act_user: UserAtcModle = user.into();
-                                // act_user.
-                                
-
-                                // if let Some(info) = self.users.get_mut(username) {
-                                //     *info = user_info;
                                 let response = self.msg_gen.user_response(
                                     Endpoint::Client { username: Some(username.clone()) }, 
                                     UserResponse::UserInfo(user_info)   
                                 );
                                 response
-                                // } else {
-                                //     return Err("nofound user info".to_string())
-                                // }
                             }
                             UserCommand::GetUserInfo => {
                                 let Ok(Some(user)) = User::find().filter(UserCol::Username.eq(username)).one(&self.db_connector).await else {
@@ -316,7 +305,9 @@ impl Platform {
                                     room.game_info.game_status = GameStatus::Running;
                                     let platform_tx = self.replicated_tx();
                                     let room = self.rooms.get(&room_name).unwrap();
-                                    let (tx, handle) = GameFactory::new(room.clone(), platform_tx.clone())?;
+                                    let (tx, handle) = 
+                                        GameFactory::new(room.clone(), platform_tx.clone(),self.db_connector.clone())
+                                        .await.map_err(|e| e.to_string())?;
                                     self.channels.game_txs.insert(room_name.clone(), tx.clone());
                                     for username in room.room_info.users.keys() {
                                         let game_msg = self.msg_gen.sys_response(

@@ -3,6 +3,9 @@ name = "TackleBox"
 version = "0.0.1"
 edition = "2021"
 
+[workspace]
+members = [".", "entity", "migration"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8.4", features = ["ws"]}
@@ -16,4 +19,7 @@ rand = "0.9.2"
 futures-util = "^0.3"
 chrono = { version = "0.4.41", features = ["serde"]}
 argon2 = { version = "0.5.3", features = ["password-hash", "zeroize", "alloc"] }
-sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-native-tls", "macros"] }
+sea-orm = { version = "2.0.0-rc.6", features = ["sqlx-postgres", "runtime-tokio-native-tls", "macros"] }
+sea-orm-migration = { version = "*"}
+entity = { path = "./entity" }
+migration = { path = "./migration" }

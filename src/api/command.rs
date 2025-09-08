@@ -127,11 +127,10 @@ pub struct UserInfo {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub enum UserStatus {
-    Offline,       // 不在线
-    Online,        // 已连接但未加入房间
-    InRoom,        // 已加入房间，但未进入游戏
-    InGame,        // 正在游戏中
-    Custom(String),
+    Offline,
+    Online,        
+    InRoom,        
+    InGame,        
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
