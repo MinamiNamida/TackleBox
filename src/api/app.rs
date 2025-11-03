@@ -1,55 +1,123 @@
-use axum::{
-    extract::{ws::{WebSocket, WebSocketUpgrade}, State}, response::{IntoResponse}, routing::any, Router
+use crate::{
+    api::handler::{
+        handle_delete_agent, handle_get_agent, handle_get_agents, handle_get_game_types,
+        handle_get_match, handle_get_my_matches, handle_get_online_matches,
+        handle_get_participants, handle_get_turns, handle_join_match, handle_login, handle_me,
+        handle_new_agent, handle_new_match, handle_register, handle_update_agent,
+    },
+    core::{
+        agents::AgentService, auth::AuthService, matches::MatchService,
+        orchestrator::OrchestratorService,
+    },
 };
-use tokio::sync::mpsc::Sender;
-use futures_util::{StreamExt};
-use tracing::{debug, info};
-use crate::api::{client::Client, command::ServerMessage, platform::Platform};
+use axum::{
+    extract::FromRef,
+    routing::{get, post},
+    Router,
+};
+use std::{net::SocketAddr, sync::Arc};
+use tokio::net::TcpListener;
+use tracing::debug;
 
+pub struct AppService {}
 
-
-pub async fn handle_socket(socket: WebSocket, platform_tx: Sender<ServerMessage>) {
-    let (ws_tx, ws_rx) = socket.split();
-
-    debug!("New websocket connection, spawning client");
-    let mut client = Client::new(ws_tx, ws_rx, platform_tx.clone());
-    let _ = client.run().await;
-    debug!("web socket connection closed");
+#[derive(Clone)]
+pub struct AppState {
+    pub auth_service: Arc<AuthService>,
+    pub agent_service: Arc<AgentService>,
+    pub match_service: Arc<MatchService>,
+    // pub ws_service: Arc<WsService>,
+    pub orchestrator_service: Arc<OrchestratorService>,
 }
 
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(platform_tx): State<Sender<ServerMessage>>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, platform_tx))
+impl FromRef<AppState> for AuthState {
+    fn from_ref(app_state: &AppState) -> AuthState {
+        AuthState {
+            auth_service: app_state.auth_service.clone(),
+        }
+    }
 }
 
-pub struct App {
-    platform_tx: Sender<ServerMessage>
+#[derive(Clone)]
+pub struct AuthState {
+    pub auth_service: Arc<AuthService>,
 }
 
-impl App {
+#[derive(Clone)]
+pub struct AgentState {
+    pub auth_service: Arc<AuthService>,
+    pub agent_service: Arc<AgentService>,
+}
 
-    pub async fn new() -> Result<Self, String> {
-        let mut platform = Platform::new().await?;
-        let tx = platform.replicated_tx().clone();
+impl FromRef<AppState> for AgentState {
+    fn from_ref(app_state: &AppState) -> Self {
+        AgentState {
+            auth_service: app_state.auth_service.clone(),
+            agent_service: app_state.agent_service.clone(),
+        }
+    }
+}
 
-        tokio::spawn(async move {
-            platform.run().await;
-        });
+pub struct MatchState {
+    pub match_service: Arc<MatchService>,
+}
 
-        Ok(Self { platform_tx: tx })
+impl FromRef<AppState> for MatchState {
+    fn from_ref(input: &AppState) -> Self {
+        MatchState {
+            match_service: input.match_service.clone(),
+        }
+    }
+}
+
+impl AppService {
+    pub fn auth_router(&self) -> Router<AppState> {
+        let router = Router::new()
+            .route("/login", post(handle_login))
+            .route("/register", post(handle_register))
+            .route("/me", get(handle_me));
+        router
     }
 
-    pub async fn run(&mut self) {
-        let platform_tx = self.platform_tx.clone();
-        let app = Router::new()
-            .route("/ws", any(ws_handler))
-            .with_state(platform_tx);
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    pub fn agent_router(&self) -> Router<AppState> {
+        let router = Router::new()
+            .route("/new", post(handle_new_agent))
+            .route("/delete", post(handle_delete_agent))
+            .route("/update", post(handle_update_agent))
+            .route("/get", post(handle_get_agent))
+            .route("/agents", get(handle_get_agents));
+        router
+    }
 
-        info!("ws server start running, bind on 0.0.0.0:3000");
+    pub fn match_router(&self) -> Router<AppState> {
+        let router = Router::new()
+            .route("/new", post(handle_new_match))
+            .route("/join", post(handle_join_match))
+            .route("/get", post(handle_get_match))
+            .route("/matches", get(handle_get_my_matches))
+            .route("/turns", post(handle_get_turns))
+            .route("/participants", post(handle_get_participants))
+            .route("/gametypes", get(handle_get_game_types))
+            .route("/search", get(handle_get_online_matches));
+        router
+    }
 
-        axum::serve(listener, app).await.unwrap();
+    pub fn api_router(&self) -> Router<AppState> {
+        let router = Router::new()
+            .nest("/auth", self.auth_router())
+            .nest("/agent", self.agent_router())
+            .nest("/match", self.match_router());
+        router
+    }
+
+    pub async fn run(&self, app_state: AppState) {
+        let router = Router::new()
+            .nest("/api/v1", self.api_router())
+            .with_state(app_state);
+
+        let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+        let listener = TcpListener::bind(addr).await.unwrap();
+        debug!("App begin to serve at localhost:3000");
+        axum::serve(listener, router).await.unwrap();
     }
 }

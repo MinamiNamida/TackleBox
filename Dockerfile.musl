@@ -1,0 +1,41 @@
+# --- 编译阶段 (Builder Stage) ---
+# 使用 clux/muslrust 镜像：专门为 Musl 静态编译预配置了工具链 (musl-gcc)。
+FROM clux/muslrust:stable AS builder
+
+# 1. 安装必要的 C 库和依赖
+# 安装 PostgreSQL (libpq), OpenSSL (libssl), **和 Protobuf 编译器 (protoc)** 的开发库。
+# clux/muslrust 基于 Debian, 故使用 apt-get。
+RUN apt-get update \
+    && apt-get install -y \
+        libpq-dev \
+        libssl-dev \
+        ca-certificates \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 复制 Cargo 文件以利用 Docker 缓存
+COPY Cargo.toml Cargo.lock ./
+
+# --- 关键修复：确保 build.rs 和 proto 文件被复制 ---
+COPY build.rs ./
+COPY proto ./proto
+COPY sqlx ./sqlx
+
+# --- OpenSSL/SQLX 交叉编译的关键环境变量 ---
+# 2. 强制 SQLX 离线模式且跳过查询检查（因为未复制 .sqlx 缓存）
+ENV SQLX_OFFLINE=true
+ENV SQLX_AS_GENERATED=true
+
+# 首次运行下载依赖, 并编译依赖项, 以利用 Docker 缓存
+# **目标：x86_64-unknown-linux-musl (静态链接 Linux 服务器)**
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release --target x86_64-unknown-linux-musl
+
+# 复制源代码
+COPY src ./src
+
+# 编译最终的静态链接二进制文件 (server 和 client)
+RUN cargo build --release --target x86_64-unknown-linux-musl

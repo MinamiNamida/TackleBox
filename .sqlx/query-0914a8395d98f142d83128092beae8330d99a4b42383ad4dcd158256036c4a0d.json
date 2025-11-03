@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            update agents set (won_games, played_games) = \n            (won_games, played_games+1) where id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0914a8395d98f142d83128092beae8330d99a4b42383ad4dcd158256036c4a0d"
+}

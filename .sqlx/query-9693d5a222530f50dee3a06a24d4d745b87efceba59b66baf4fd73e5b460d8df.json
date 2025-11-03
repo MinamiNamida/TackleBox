@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            select match_id, i_turn, score_deltas from turns\n            where match_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "i_turn",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "score_deltas",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "9693d5a222530f50dee3a06a24d4d745b87efceba59b66baf4fd73e5b460d8df"
+}

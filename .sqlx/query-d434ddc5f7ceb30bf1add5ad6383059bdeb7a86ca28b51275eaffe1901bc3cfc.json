@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            update matches set (status, winner_id) = ($1, $2) where id = $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "match_status",
+            "kind": {
+              "Enum": [
+                "Pending",
+                "Running",
+                "completed",
+                "Cancelled"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d434ddc5f7ceb30bf1add5ad6383059bdeb7a86ca28b51275eaffe1901bc3cfc"
+}

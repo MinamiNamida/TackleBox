@@ -1,0 +1,39 @@
+syntax = "proto3";
+package client;
+
+service ClientService {
+    rpc MatchMonitor (MatchMonitorRequest) returns (stream MatchMonitorResponse);
+    rpc MatchPlayer (stream MatchPlayerRequest) returns (stream MatchPlayerResponse);
+}
+
+// MatchMonitor
+
+message MatchMonitorRequest {}
+
+message MatchMonitorResponse {
+    int64 timestamp = 1;
+    oneof event_type {
+        MatchUpdate match_update = 2;
+        ScoreChange score_change = 3;
+    }
+}
+
+message MatchUpdate {
+    string current_status = 1;
+    string message = 2;
+}
+
+message ScoreChange {
+    map<string, int32> agent_scores = 1;
+    string source_i_turn = 2;
+}
+
+// MatchPlayer
+
+message MatchPlayerRequest {
+    string action = 1;
+}
+
+message MatchPlayerResponse {
+    string state = 1;
+}

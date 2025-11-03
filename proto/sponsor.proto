@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package sponsor;
+
+service SponsorService {
+    rpc ProcessGame(stream ProcessGameRequest) returns (stream ProcessGameResponse); 
+}
+
+message ProcessGameRequest {
+    oneof request_type {
+        GameInitRequest init = 1;
+        PlayerAction action = 2;
+        GameControl control = 3;
+        bool connection = 4;
+    }
+}
+
+message ProcessGameResponse {
+    oneof response_type {
+        GameInitResponse init_response = 1;
+        GameStateUpdate state_update = 2;
+        GameEndStatus end_status = 3;
+    }
+}
+
+message GameInitRequest {
+    string game_type = 1;
+}
+
+message PlayerAction {
+    string action = 1;
+}
+
+message GameControl {
+    enum ControlType {
+        PAUSE = 0;
+        RESUME = 1;
+    }
+    ControlType type = 1;
+}
+
+message GameInitResponse {
+    enum ResultType {
+        SUCCESS = 0;
+        FAILED = 1;
+    }
+    ResultType type = 1;
+}
+
+message GameStateUpdate {
+    string state = 1;
+    bool is_over = 2;
+    int32 i_player = 3;
+}
+
+// 示例：游戏结束状态
+message GameEndStatus {
+    repeated float payoffs = 2;   
+}
