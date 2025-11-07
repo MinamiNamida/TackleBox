@@ -5,10 +5,7 @@ use crate::{
         handle_get_participants, handle_get_turns, handle_join_match, handle_login, handle_me,
         handle_new_agent, handle_new_match, handle_register, handle_update_agent,
     },
-    core::{
-        agents::AgentService, auth::AuthService, matches::MatchService,
-        orchestrator::OrchestratorService,
-    },
+    core::{agents::AgentService, auth::AuthService, matches::MatchService},
 };
 use axum::{
     extract::FromRef,
@@ -26,8 +23,6 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub agent_service: Arc<AgentService>,
     pub match_service: Arc<MatchService>,
-    // pub ws_service: Arc<WsService>,
-    pub orchestrator_service: Arc<OrchestratorService>,
 }
 
 impl FromRef<AppState> for AuthState {

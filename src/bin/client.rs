@@ -1,4 +1,4 @@
-use std::{env, str::FromStr, time::Duration};
+use std::{env, str::FromStr};
 
 use base64::prelude::*;
 use clap::{Parser, Subcommand};
@@ -12,7 +12,7 @@ use tackle_box::{
     },
     contracts::{
         grpc::MatchMetadata,
-        payloads_v1::{
+        payloads::{
             JoinMatchPayload, LoginPayload, LoginResponse, NewAgentPayload, NewMatchPayload,
             RegisterPayload,
         },
@@ -27,6 +27,7 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{metadata::MetadataValue, transport::Channel, Request, Status};
 use tracing::{debug, info};
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
 enum ClientError {
@@ -93,62 +94,61 @@ enum AgentCommands {
         path: String,
         /// 使用的 Agent
         #[arg(short, long)]
-        agent_name: String,
+        agent_id: Uuid,
     },
-
-    /// 创建一个新的 Agent
-    Create {
-        /// 新 Agent 的名称
-        name: String,
-        game_type: String,
-        #[arg(short, long, default_value = "0.0.1")]
-        version: String,
-        #[arg(short, long)]
-        description: Option<String>,
-    },
-    /// 更新一个Agent信息
-    Update {
-        name: String,
-        game_type: Option<String>,
-        version: Option<String>,
-        description: Option<String>,
-    },
-    /// 列出所有Agent
-    List,
+    // /// 创建一个新的 Agent
+    // Create {
+    //     /// 新 Agent 的名称
+    //     name: String,
+    //     game_type: String,
+    //     #[arg(short, long, default_value = "0.0.1")]
+    //     version: String,
+    //     #[arg(short, long)]
+    //     description: Option<String>,
+    // },
+    // /// 更新一个Agent信息
+    // Update {
+    //     name: String,
+    //     game_type: Option<String>,
+    //     version: Option<String>,
+    //     description: Option<String>,
+    // },
+    // /// 列出所有Agent
+    // List,
 }
 
 // --- Match 子命令集 ---
 #[derive(Subcommand, Debug)]
 enum MatchCommands {
-    /// 提交一个新的比赛请求
-    Create {
-        /// 比赛名称
-        match_name: String,
-        /// 游戏类型
-        game_type: String,
-        /// 总共进行的场次
-        #[arg(default_value_t = 10)]
-        total_games: i32,
-        /// 参与的Agent
-        with_agent_names: Vec<String>,
-        /// 比赛描述
-        description: Option<String>,
-        /// 密码
-        password: Option<String>,
-    },
-    /// 实时监控一个比赛的状态和日志 (使用 WebSocket)
-    Monitor {
-        /// 比赛名称
-        match_name: String,
-    },
-    Join {
-        /// 比赛名称
-        match_name: String,
-        /// Agent名称
-        agent_name: String,
-    },
-    /// 列出所有正在运行的比赛
-    List,
+    // /// 提交一个新的比赛请求
+    // Create {
+    //     /// 比赛名称
+    //     match_name: String,
+    //     /// 游戏类型
+    //     game_type: String,
+    //     /// 总共进行的场次
+    //     #[arg(default_value_t = 50)]
+    //     total_games: i32,
+    //     /// 参与的Agent
+    //     with_agent_names: Vec<String>,
+    //     /// 比赛描述
+    //     description: Option<String>,
+    //     /// 密码
+    //     password: Option<String>,
+    // },
+    // /// 实时监控一个比赛的状态和日志 (使用 WebSocket)
+    // Monitor {
+    //     /// 比赛名称
+    //     match_name: String,
+    // },
+    // Join {
+    //     /// 比赛名称
+    //     match_name: String,
+    //     /// Agent名称
+    //     agent_name: String,
+    // },
+    // /// 列出所有正在运行的比赛
+    // List,
 }
 
 // --- Profile 子命令集 ---
@@ -160,6 +160,8 @@ enum ProfileCommands {
         username: String,
         /// 用户密码
         password: String,
+        /// Email
+        email: String,
     },
     Login {
         /// 用户名称
@@ -181,46 +183,52 @@ async fn main() -> Result<(), ClientError> {
             ProfileCommands::Login { username, password } => {
                 handle_login(username, password).await?
             }
-            ProfileCommands::Register { username, password } => {
-                println!("username: {}, password: {}", &username, &password);
-                handle_register(username, password).await?
+            ProfileCommands::Register {
+                username,
+                password,
+                email,
+            } => {
+                println!(
+                    "username: {}, password: {}, email: {}",
+                    &username, &password, &email
+                );
+                handle_register(username, password, email).await?
             }
         },
         Commands::Agent { command } => match command {
-            AgentCommands::Create {
-                name,
-                version,
-                game_type,
-                description,
-            } => handle_create_agent(name, version, game_type, description).await?,
-            AgentCommands::Run { path, agent_name } => handle_run_agent(path, agent_name).await?,
-            AgentCommands::List => handle_list_agents().await?,
+            // AgentCommands::Create {
+            //     name,
+            //     version,
+            //     game_type,
+            //     description,
+            // } => handle_create_agent(name, version, game_type, description).await?,
+            AgentCommands::Run { path, agent_id } => handle_run_agent(path, agent_id).await?,
+            // AgentCommands::List => handle_list_agents().await?,
             _ => {}
         },
         Commands::Match { command } => match command {
-            MatchCommands::Create {
-                match_name,
-                description,
-                game_type,
-                total_games,
-                with_agent_names,
-                password,
-            } => {
-                handle_create_match(
-                    match_name,
-                    description,
-                    game_type,
-                    total_games,
-                    with_agent_names,
-                    password,
-                )
-                .await?
-            }
-            MatchCommands::Join {
-                match_name,
-                agent_name,
-            } => handle_join_match(match_name, agent_name).await?,
-
+            // MatchCommands::Create {
+            //     match_name,
+            //     description,
+            //     game_type,
+            //     total_games,
+            //     with_agent_names,
+            //     password,
+            // } => {
+            //     handle_create_match(
+            //         match_name,
+            //         description,
+            //         game_type,
+            //         total_games,
+            //         with_agent_names,
+            //         password,
+            //     )
+            //     .await?
+            // }
+            // MatchCommands::Join {
+            //     match_name,
+            //     agent_name,
+            // } => handle_join_match(match_name, agent_name).await?,
             _ => {}
         },
         _ => (),
@@ -277,6 +285,7 @@ async fn handle_login(username: String, password: String) -> Result<(), ClientEr
     // 反序列化响应
     let login_response: LoginResponse = resp.json().await?;
     let LoginResponse {
+        user_id,
         token,
         token_type: _,
     } = login_response;
@@ -294,7 +303,11 @@ async fn handle_login(username: String, password: String) -> Result<(), ClientEr
     Ok(())
 }
 
-async fn handle_register(username: String, password: String) -> Result<(), ClientError> {
+async fn handle_register(
+    username: String,
+    password: String,
+    email: String,
+) -> Result<(), ClientError> {
     println!("Attempting to register new user {}...", username);
     let client = Client::builder()
         .http1_only()
@@ -303,7 +316,7 @@ async fn handle_register(username: String, password: String) -> Result<(), Clien
     let payload = RegisterPayload {
         username,
         password,
-        email: None,
+        email,
     };
     let resp = client
         .post(format!("http://{}/api/v1/auth/register", SERVICE_URL))
@@ -317,6 +330,7 @@ async fn handle_register(username: String, password: String) -> Result<(), Clien
 
     let register_response: LoginResponse = resp.json().await?;
     let LoginResponse {
+        user_id,
         token,
         token_type: _,
     } = register_response;
@@ -334,135 +348,135 @@ async fn handle_register(username: String, password: String) -> Result<(), Clien
     Ok(())
 }
 
-async fn handle_create_agent(
-    name: String,
-    version: String,
-    game_type: String,
-    description: Option<String>,
-) -> Result<(), ClientError> {
-    let token = get_auth_token()?;
-    let client = Client::new();
-    let payload = NewAgentPayload {
-        name,
-        version,
-        game_type,
-        description,
-    };
+// async fn handle_create_agent(
+//     name: String,
+//     version: String,
+//     game_type: String,
+//     description: Option<String>,
+// ) -> Result<(), ClientError> {
+//     let token = get_auth_token()?;
+//     let client = Client::new();
+//     let payload = NewAgentPayload {
+//         name,
+//         version,
+//         game_type,
+//         description,
+//     };
 
-    let resp = client
-        .post(format!("http://{}/api/v1/agent/new", SERVICE_URL,))
-        .header("Authorization", format!("Bearer {}", token))
-        .json(&json!(payload))
-        .send()
-        .await?;
+//     let resp = client
+//         .post(format!("http://{}/api/v1/agent/new", SERVICE_URL,))
+//         .header("Authorization", format!("Bearer {}", token))
+//         .json(&json!(payload))
+//         .send()
+//         .await?;
 
-    let resp = process_error(resp).await?;
-    println!("Creating Agent successful!");
-    Ok(())
-}
+//     let resp = process_error(resp).await?;
+//     println!("Creating Agent successful!");
+//     Ok(())
+// }
 
-async fn handle_list_agents() -> Result<(), ClientError> {
-    let token = get_auth_token()?;
-    let client = Client::new();
+// async fn handle_list_agents() -> Result<(), ClientError> {
+//     let token = get_auth_token()?;
+//     let client = Client::new();
 
-    let resp = client
-        .get(format!("http://{}/api/v1/agent/agents", SERVICE_URL))
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await?;
+//     let resp = client
+//         .get(format!("http://{}/api/v1/agent/agents", SERVICE_URL))
+//         .header("Authorization", format!("Bearer {}", token))
+//         .send()
+//         .await?;
 
-    let resp = process_error(resp).await?;
-    Ok(())
-}
+//     let resp = process_error(resp).await?;
+//     Ok(())
+// }
 
-async fn handle_create_match(
-    name: String,
-    description: Option<String>,
-    game_type: String,
-    total_games: i32,
-    with_agent_names: Vec<String>,
-    password: Option<String>,
-) -> Result<(), ClientError> {
-    let token = get_auth_token()?;
-    let client = Client::new();
-    let payload = NewMatchPayload {
-        name,
-        game_type,
-        total_games,
-        with_agent_names,
-        password,
-    };
+// async fn handle_create_match(
+//     name: String,
+//     description: Option<String>,
+//     game_type: String,
+//     total_games: i32,
+//     with_agent_names: Vec<String>,
+//     password: Option<String>,
+// ) -> Result<(), ClientError> {
+//     let token = get_auth_token()?;
+//     let client = Client::new();
+//     let payload = NewMatchPayload {
+//         name,
+//         game_type,
+//         total_games,
+//         with_agent_names,
+//         password,
+//     };
 
-    let resp = client
-        .post(format!("http://{}/api/v1/match/new", SERVICE_URL,))
-        .json(&json!(payload))
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await?;
-    let resp = process_error(resp).await?;
+//     let resp = client
+//         .post(format!("http://{}/api/v1/match/new", SERVICE_URL,))
+//         .json(&json!(payload))
+//         .header("Authorization", format!("Bearer {}", token))
+//         .send()
+//         .await?;
+//     let resp = process_error(resp).await?;
 
-    println!("Creating match successful!");
-    Ok(())
-}
+//     println!("Creating match successful!");
+//     Ok(())
+// }
 
-async fn handle_join_match(match_name: String, agent_name: String) -> Result<(), ClientError> {
-    let token = get_auth_token()?;
-    let client = Client::new();
-    let payload = JoinMatchPayload {
-        match_name,
-        agent_name,
-    };
+// async fn handle_join_match(match_id: Uuid, agent_ids: Vec<Uuid>) -> Result<(), ClientError> {
+//     let token = get_auth_token()?;
+//     let client = Client::new();
+//     let payload = JoinMatchPayload {
+//         match_id,
+//         agent_ids,
+//     };
 
-    let resp = client
-        .post(format!("http://{}/api/v1/match/join", SERVICE_URL))
-        .json(&json!(payload))
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await?;
-    println!("Join match successful!");
-    Ok(())
-}
+//     let resp = client
+//         .post(format!("http://{}/api/v1/match/join", SERVICE_URL))
+//         .json(&json!(payload))
+//         .header("Authorization", format!("Bearer {}", token))
+//         .send()
+//         .await?;
+//     println!("Join match successful!");
+//     Ok(())
+// }
 
-async fn handle_monitor_match(match_name: String) -> Result<(), ClientError> {
-    let token = get_auth_token()?;
-    let channel = Channel::from_shared(format!("http://{}", SERVICE_GRPC_URL))
-        .unwrap()
-        .connect()
-        .await?;
+// async fn handle_monitor_match(match_id: Uuid) -> Result<(), ClientError> {
+//     let token = get_auth_token()?;
+//     let channel = Channel::from_shared(format!("http://{}", SERVICE_GRPC_URL))
+//         .unwrap()
+//         .connect()
+//         .await?;
 
-    let auth_token: MetadataValue<_> = format!("Bearer {}", token).parse().unwrap();
-    let mut client = ClientServiceClient::with_interceptor(channel, move |mut req: Request<()>| {
-        req.metadata_mut()
-            .insert("authorization", auth_token.clone());
-        Ok(req)
-    });
-    let request = MatchMonitorRequest {};
-    let resp = client.match_monitor(request).await?;
-    let mut in_stream = resp.into_inner();
-    loop {
-        let Ok(Some(msg)) = in_stream.message().await else {
-            break;
-        };
-        let Some(event) = msg.event_type else {
-            break;
-        };
-        match event {
-            EventType::MatchUpdate(up) => {
-                println!("Current Status: {}", up.current_status);
-                println!("New Message: {}", up.message);
-            }
-            EventType::ScoreChange(s) => {
-                println!(
-                    "Turn {} with Score Changes: {:?}",
-                    s.source_i_turn, s.agent_scores
-                );
-            }
-        }
-    }
-    Ok(())
-}
+//     let auth_token: MetadataValue<_> = format!("Bearer {}", token).parse().unwrap();
+//     let mut client = ClientServiceClient::with_interceptor(channel, move |mut req: Request<()>| {
+//         req.metadata_mut()
+//             .insert("authorization", auth_token.clone());
+//         Ok(req)
+//     });
+//     let request = MatchMonitorRequest {};
+//     let resp = client.match_monitor(request).await?;
+//     let mut in_stream = resp.into_inner();
+//     loop {
+//         let Ok(Some(msg)) = in_stream.message().await else {
+//             break;
+//         };
+//         let Some(event) = msg.event_type else {
+//             break;
+//         };
+//         match event {
+//             EventType::MatchUpdate(up) => {
+//                 println!("Current Status: {}", up.current_status);
+//                 println!("New Message: {}", up.message);
+//             }
+//             EventType::ScoreChange(s) => {
+//                 println!(
+//                     "Turn {} with Score Changes: {:?}",
+//                     s.source_i_turn, s.agent_scores
+//                 );
+//             }
+//         }
+//     }
+//     Ok(())
+// }
 
-async fn handle_run_agent(path: String, agent_name: String) -> Result<(), ClientError> {
+async fn handle_run_agent(path: String, agent_id: Uuid) -> Result<(), ClientError> {
     let token = get_auth_token()?;
 
     let channel = Channel::from_shared(format!("http://{}", SERVICE_GRPC_URL))
@@ -490,9 +504,7 @@ async fn handle_run_agent(path: String, agent_name: String) -> Result<(), Client
         .ok_or_else(|| ClientError::StdinHandler)?;
 
     let auth_token: MetadataValue<_> = format!("Bearer {}", token).parse().unwrap();
-    let metadata_bytes = match serde_json::to_vec(&MatchMetadata::MatchPlayer {
-        agent_name: agent_name.clone(),
-    }) {
+    let metadata_bytes = match serde_json::to_vec(&MatchMetadata::MatchPlayer { agent_id }) {
         Ok(bytes) => bytes,
         Err(e) => {
             // 序列化失败，返回 gRPC 错误

@@ -1,18 +1,17 @@
-use std::{sync::Arc, time::Duration};
-
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     api::{
         app::{AppService, AppState},
         error::AppError,
-        // ws::WsService,
     },
     core::{
         agents::AgentService,
         auth::{AuthConfig, AuthService},
+        client::{run_client_server, ClientService},
+        core::Core,
         matches::MatchService,
-        orchestrator::{run_client_server, OrchestratorService},
     },
     repo::{
         agents::AgentRepo, game_type::GameTypeRepo, matches::MatchRepo,
@@ -23,6 +22,14 @@ use crate::{
 pub mod api;
 pub mod core;
 pub mod repo;
+
+use rust_embed::RustEmbed;
+
+// 🚨 请根据您的实际路径修改 #[folder]
+// 假设您的 Cargo.toml 在 my_rust_project/，而 dist 在 my_rust_project/frontend/dist/
+#[derive(RustEmbed)]
+#[folder = "frontend/dist/"]
+struct Asset;
 
 pub async fn setup_database() -> PgPool {
     let database_url = "postgres://tacklebox:password@localhost/mydb";
@@ -63,17 +70,23 @@ async fn main() -> Result<(), AppError> {
     let agent_service = AgentService {
         repo: Arc::new(AgentRepo { pool: pool.clone() }),
     };
+    let sponsor_urls = HashMap::from_iter(vec![(
+        "rlcard".to_string(),
+        "http://localhost:50051".to_string(),
+    )]);
 
-    let orchestrator_service = Arc::new(
-        OrchestratorService::new(
-            agent_repo.clone(),
-            match_repo.clone(),
-            "http://localhost:50051".to_string(),
-        )
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?,
-    );
-
+    let mut core = Core::new(
+        sponsor_urls,
+        match_repo.clone(),
+        agent_repo.clone(),
+        turn_repo.clone(),
+    )
+    .await?;
+    let core_tx = core.tx();
+    tokio::spawn(async move {
+        let _ = core.run().await;
+    });
+    let client_service = ClientService::new(core_tx.clone()).await?;
     let match_service = MatchService::new(
         gametype_repo,
         user_repo,
@@ -81,17 +94,17 @@ async fn main() -> Result<(), AppError> {
         match_repo,
         turn_repo,
         participation_repo,
-        orchestrator_service.clone(),
+        core_tx,
     );
+
     let app_state = AppState {
         agent_service: Arc::new(agent_service),
         auth_service: Arc::new(auth_service),
-        orchestrator_service: orchestrator_service.clone(),
         match_service: Arc::new(match_service),
     };
 
     tokio::spawn(async move {
-        let _ = run_client_server(orchestrator_service).await;
+        let _ = run_client_server(client_service).await;
     });
 
     let app = AppService {};

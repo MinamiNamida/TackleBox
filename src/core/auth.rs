@@ -44,17 +44,22 @@ impl AuthService {
     }
 
     pub async fn login(&self, username: &String, pwd: &String) -> Result<Uuid, AuthError> {
-        let id = self.user_repo.get_id_by_name(username).await?;
-        let password_hash = self.user_repo.get_pwd_hash(id).await?;
+        let user_id = self.user_repo.get_id_by_name(username).await?;
+        let user = self.user_repo.get_user(user_id).await?;
+        let password_hash = user.password_hash;
         let parsed_hash = PasswordHash::new(&password_hash).unwrap();
-        let user_id = match Argon2::default().verify_password(pwd.as_bytes(), &parsed_hash) {
-            Ok(_) => Ok(id),
+        match Argon2::default().verify_password(pwd.as_bytes(), &parsed_hash) {
+            Ok(_) => Ok(user_id),
             Err(_) => Err(AuthError::WrongPassword),
-        }?;
-        Ok(user_id)
+        }
     }
 
-    pub async fn register(&self, username: &String, pwd: &String) -> Result<Uuid, AuthError> {
+    pub async fn register(
+        &self,
+        username: &String,
+        pwd: &String,
+        email: &String,
+    ) -> Result<Uuid, AuthError> {
         if self.user_repo.get_id_by_name(username).await.is_ok() {
             return Err(AuthError::AlreadyExists);
         }
@@ -71,6 +76,7 @@ impl AuthService {
             .new_user(&NewUserDTO {
                 username: username.clone(),
                 password_hash,
+                email: email.clone(),
             })
             .await?;
         Ok(user_id)

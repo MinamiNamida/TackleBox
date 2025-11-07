@@ -1,9 +1,9 @@
 use crate::repo::{
-    agents::{AgentRepo, GetAgentDTO, NewAgentDTO, UpdateAgentDTO},
+    agents::{AgentRepo, NewAgentDTO, UpdateAgentDTO},
     error::RepoError,
 };
 use std::sync::Arc;
-use tackle_box::contracts::payloads_v1::{GetAgentResponse, NewAgentPayload, UpdateAgentPayload};
+use tackle_box::contracts::payloads::{GetAgentResponse, NewAgentPayload, UpdateAgentPayload};
 use uuid::Uuid;
 
 pub struct AgentService {
@@ -11,25 +11,25 @@ pub struct AgentService {
 }
 
 impl AgentService {
-    pub async fn new_agent(
-        &self,
-        user_id: Uuid,
-        agent: NewAgentPayload,
-    ) -> Result<Uuid, RepoError> {
+    pub async fn new_agent(&self, user_id: Uuid, agent: NewAgentPayload) -> Result<(), RepoError> {
         let NewAgentPayload {
             name,
-            game_type,
+            game_type_id,
             version,
             description,
+            policy,
         } = agent;
+
         let agent = NewAgentDTO {
-            owner_id: user_id,
+            user_id,
             name,
-            game_type: game_type,
-            version: Some(version),
-            description: description,
+            game_type_id,
+            version,
+            description,
+            policy,
         };
-        self.repo.new_agent(agent).await
+        self.repo.new_agent(agent).await?;
+        Ok(())
     }
     pub async fn update_agent(
         &self,
@@ -37,96 +37,40 @@ impl AgentService {
         agent: UpdateAgentPayload,
     ) -> Result<(), RepoError> {
         let UpdateAgentPayload {
+            agent_id,
             name,
-            game_type,
+            game_type_id,
             version,
             description,
+            policy,
         } = agent;
-        let id = self.get_agent_id_by_name(user_id, &name).await?;
         let agent = UpdateAgentDTO {
-            id,
+            user_id,
+            agent_id,
             name,
-            game_type,
+            game_type_id,
             version,
             description,
+            policy,
         };
-        self.repo.update_agent(agent).await
+        self.repo.update_agent(agent).await?;
+        Ok(())
     }
-    pub async fn delete_agent(&self, user_id: Uuid, agent_name: String) -> Result<(), RepoError> {
-        let id = self.get_agent_id_by_name(user_id, &agent_name).await?;
-
-        self.repo.delete_agent(id, user_id).await
+    pub async fn delete_agent(&self, user_id: Uuid, agent_id: Uuid) -> Result<(), RepoError> {
+        self.repo.delete_agent(agent_id, user_id).await?;
+        Ok(())
     }
     pub async fn get_agent(
         &self,
-        user_id: Uuid,
-        agent_name: String,
+        _user_id: Uuid,
+        agent_id: Uuid,
     ) -> Result<GetAgentResponse, RepoError> {
-        // let agent_id = self.get_agent_id_by_name(user_id, &agent_name).await?;
-        let agent = self.repo.get_agent(agent_name).await?;
-        let GetAgentDTO {
-            agent_id,
-            readable_agent_name,
-            owner_id,
-            owner_username,
-            agent_name_base,
-            game_type,
-            version,
-            description,
-            played_games,
-            won_games,
-        } = agent;
-
-        Ok(GetAgentResponse {
-            id: agent_id,
-            name: agent_name_base,
-            version,
-            game_type,
-            description,
-            // created_at,s
-            played_games,
-            won_games,
-        })
+        let agent = self.repo.get_agent(agent_id).await?;
+        Ok(agent)
     }
-    pub async fn get_agent_id_by_name(
-        &self,
-        user_id: Uuid,
-        name: &String,
-    ) -> Result<Uuid, RepoError> {
-        self.repo.get_agent_id_by_name(user_id, name).await
-    }
-    pub async fn get_agents_by_owner_id(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Vec<GetAgentResponse>, RepoError> {
-        let agents = self.repo.get_agents_by_owner_id(user_id).await?;
-        Ok(agents
-            .into_iter()
-            .map(|agent| {
-                let GetAgentDTO {
-                    agent_id,
-                    readable_agent_name,
-                    owner_id,
-                    owner_username,
-                    agent_name_base,
-                    game_type,
-                    version,
-                    description,
-                    played_games,
-                    won_games,
-                } = agent;
 
-                GetAgentResponse {
-                    id: agent_id,
-                    name: agent_name_base,
-                    version,
-                    game_type,
-                    description,
-                    // created_at,s
-                    played_games,
-                    won_games,
-                }
-            })
-            .collect())
+    pub async fn get_my_agents(&self, user_id: Uuid) -> Result<Vec<GetAgentResponse>, RepoError> {
+        let agents = self.repo.get_my_agents(user_id).await?;
+        Ok(agents)
     }
 }

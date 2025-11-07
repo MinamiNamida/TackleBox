@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum MatchMetadata {
-    MatchMonitor { match_name: String },
-    MatchPlayer { agent_name: String },
+    MatchMonitor { match_id: Uuid },
+    MatchPlayer { agent_id: Uuid },
     None,
 }

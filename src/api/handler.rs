@@ -8,11 +8,10 @@ use crate::{
 };
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
-use tackle_box::contracts::payloads_v1::{
+use tackle_box::contracts::payloads::{
     DeleteAgentPayload, GetAgentPayload, GetMatchLogsPayload, GetMatchPayload,
-    GetPariticipantsPayload, GetUserResponse, JoinMatchPayload, LeaveMatchPayload, LoginPayload,
-    LoginResponse, NewAgentPayload, NewMatchPayload, RegisterPayload, RegisterResponse,
-    UpdateAgentPayload,
+    GetParticipantsPayload, GetUserResponse, JoinMatchPayload, LoginPayload, LoginResponse,
+    NewAgentPayload, NewMatchPayload, RegisterPayload, RegisterResponse, UpdateAgentPayload,
 };
 /*
 ====================
@@ -28,6 +27,7 @@ pub async fn handle_login(
     let user_id = state.auth_service.login(&username, &password).await?;
     let jwt_token = generate_jwt(&username, user_id).await?;
     let resp = LoginResponse {
+        user_id,
         token: jwt_token,
         token_type: "Bearer".to_string(),
     };
@@ -43,9 +43,13 @@ pub async fn handle_register(
         password,
         email,
     } = payload;
-    let user_id = state.auth_service.register(&username, &password).await?;
+    let user_id = state
+        .auth_service
+        .register(&username, &password, &email)
+        .await?;
     let jwt_token = generate_jwt(&username, user_id).await?;
     let resp = RegisterResponse {
+        user_id,
         token: jwt_token,
         token_type: "Bearer".to_string(),
     };
@@ -63,6 +67,7 @@ pub async fn handle_me(
         ..
     } = me;
     let user = GetUserResponse {
+        user_id,
         username,
         created_at,
     };
@@ -80,7 +85,10 @@ pub async fn handle_get_agent(
     State(state): State<AgentState>,
     Json(payload): Json<GetAgentPayload>,
 ) -> Result<impl IntoResponse, AppError> {
-    let agent = state.agent_service.get_agent(user_id, payload.name).await?;
+    let agent = state
+        .agent_service
+        .get_agent(user_id, payload.agent_id)
+        .await?;
     Ok((StatusCode::OK, Json(json!(agent))))
 }
 
@@ -109,7 +117,7 @@ pub async fn handle_delete_agent(
 ) -> Result<impl IntoResponse, AppError> {
     state
         .agent_service
-        .delete_agent(user_id, payload.name)
+        .delete_agent(user_id, payload.agent_id)
         .await?;
     Ok(StatusCode::OK)
 }
@@ -118,7 +126,7 @@ pub async fn handle_get_agents(
     AuthenticatedUser { user_id }: AuthenticatedUser,
     State(state): State<AgentState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let agents = state.agent_service.get_agents_by_owner_id(user_id).await?;
+    let agents = state.agent_service.get_my_agents(user_id).await?;
     Ok((StatusCode::OK, Json(json!(agents))))
 }
 
@@ -133,7 +141,7 @@ pub async fn handle_get_match(
     State(state): State<MatchState>,
     Json(payload): Json<GetMatchPayload>,
 ) -> Result<impl IntoResponse, AppError> {
-    let one_match = state.match_service.get_match(&payload.name).await?;
+    let one_match = state.match_service.get_match(payload.match_id).await?;
     Ok((StatusCode::OK, Json(json!(one_match))))
 }
 
@@ -141,7 +149,7 @@ pub async fn handle_get_my_matches(
     AuthenticatedUser { user_id }: AuthenticatedUser,
     State(state): State<MatchState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let matches = state.match_service.get_my_matches(user_id).await?;
+    let matches = state.match_service.get_my_joined_matches(user_id).await?;
     Ok((StatusCode::OK, Json(json!(matches))))
 }
 
@@ -161,7 +169,12 @@ pub async fn handle_join_match(
 ) -> Result<impl IntoResponse, AppError> {
     state
         .match_service
-        .join_match(user_id, &payload.match_name, &payload.agent_name)
+        .join_match(
+            user_id,
+            payload.match_id,
+            payload.agent_ids,
+            payload.password,
+        )
         .await?;
     Ok(StatusCode::OK)
 }
@@ -193,7 +206,7 @@ pub async fn handle_get_turns(
 ) -> Result<impl IntoResponse, AppError> {
     let turns = state
         .match_service
-        .get_match_logs(user_id, &payload.match_name)
+        .get_match_logs(user_id, payload.match_id)
         .await?;
     Ok((StatusCode::OK, Json(json!(turns))))
 }
@@ -201,11 +214,11 @@ pub async fn handle_get_turns(
 pub async fn handle_get_participants(
     AuthenticatedUser { user_id }: AuthenticatedUser,
     State(state): State<MatchState>,
-    Json(payload): Json<GetPariticipantsPayload>,
+    Json(payload): Json<GetParticipantsPayload>,
 ) -> Result<impl IntoResponse, AppError> {
     let parts = state
         .match_service
-        .get_participants(user_id, &payload.match_name)
+        .get_participants(user_id, payload.match_id)
         .await?;
     Ok((StatusCode::OK, Json(json!(parts))))
 }

@@ -1,9 +1,17 @@
 use std::sync::Arc;
 
 use sqlx::{query, query_as, query_scalar, PgPool};
+use tackle_box::contracts::payloads::GetParticipantsResponse;
 use uuid::Uuid;
 
 use crate::repo::error::RepoError;
+
+// pub struct GetParticipantDTO {
+//     pub match_id: Uuid,
+//     pub match_name: String,
+//     pub agent_id: Uuid,
+//     pub agent_name: String,
+// }
 
 pub struct ParticipationRepo {
     pub pool: Arc<PgPool>,
@@ -18,7 +26,7 @@ impl ParticipationRepo {
         let mut conn = self.pool.acquire().await?;
         let _ = query!(
             r#"
-            insert into participations (match_id, agent_id) values ($1, $2)
+            insert into participants (match_id, agent_id) values ($1, $2)
             "#,
             match_id,
             agent_id,
@@ -28,31 +36,25 @@ impl ParticipationRepo {
         Ok(())
     }
 
-    pub async fn get_participants(&self, match_id: Uuid) -> Result<Vec<Uuid>, RepoError> {
+    pub async fn get_participants(
+        &self,
+        match_id: Uuid,
+    ) -> Result<Vec<GetParticipantsResponse>, RepoError> {
         let mut conn = self.pool.acquire().await?;
-        let participants = query_scalar!(
+        let participants = query_as!(
+            GetParticipantsResponse,
             r"
-            select agent_id from participations where match_id = $1
+            SELECT 
+                P.match_id,
+                M.name as match_name,
+                P.agent_id,
+                A.name as agent_name
+            FROM participants P
+            JOIN matches M ON P.match_id = M.match_id
+            JOIN agents A ON P.agent_id = A.agent_id
+            WHERE P.match_id = $1
             ",
             match_id
-        )
-        .fetch_all(&mut *conn)
-        .await?;
-        Ok(participants)
-    }
-
-    pub async fn get_participants_by_match_name(
-        &self,
-        match_name: &String,
-    ) -> Result<Vec<String>, RepoError> {
-        let mut conn = self.pool.acquire().await?;
-        let participants = query_scalar!(
-            r#"
-            select readable_agent_name as "readable_agent_name!" 
-            from v_readable_participations
-            where readable_match_name = $1
-            "#,
-            match_name,
         )
         .fetch_all(&mut *conn)
         .await?;
@@ -63,7 +65,7 @@ impl ParticipationRepo {
         let mut conn = self.pool.acquire().await?;
         let num = query_scalar!(
             r#"
-            select count(*) from participations where match_id = $1
+            select count(*) from participants where match_id = $1
             "#,
             match_id
         )
@@ -79,7 +81,7 @@ impl ParticipationRepo {
     ) -> Result<(), RepoError> {
         let mut conn = self.pool.acquire().await?;
         let _ = query!(
-            "delete from participations where match_id = $1 and agent_id = $2",
+            "delete from participants where match_id = $1 and agent_id = $2",
             match_id,
             agent_id,
         )

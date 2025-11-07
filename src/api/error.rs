@@ -1,10 +1,15 @@
-use crate::{core::auth::AuthError, repo::error::RepoError};
+use crate::{
+    core::{auth::AuthError, core::CoreMessage},
+    repo::error::RepoError,
+};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 use serde_json::json;
+use tackle_box::connection::{MatchPlayerResponse, ProcessGameRequest};
+use tokio::sync::mpsc::error::SendError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -39,6 +44,18 @@ pub enum AppError {
 
     #[error("uuid parse error")]
     UuidParse(#[from] uuid::Error),
+
+    #[error("Time out or send error")]
+    SendError(#[from] SendError<CoreMessage>),
+
+    #[error("Time out or send error")]
+    SendErrorTonic(#[from] SendError<ProcessGameRequest>),
+
+    #[error("Time out or send error")]
+    SendErrorClient(#[from] SendError<MatchPlayerResponse>),
+
+    #[error("Match Abort")]
+    MatchAborted(String),
 }
 
 impl IntoResponse for AppError {
@@ -56,7 +73,11 @@ impl IntoResponse for AppError {
             | AppError::Serde(_)
             | AppError::Communication(_)
             | AppError::Grpc(_)
-            | AppError::UuidParse(_) => {
+            | AppError::UuidParse(_)
+            | AppError::SendErrorTonic(_)
+            | AppError::SendError(_)
+            | AppError::SendErrorClient(_)
+            | AppError::MatchAborted(_) => {
                 // 打印到服务器日志，以便后端排查
                 eprintln!("Internal Error: {:?}", self);
                 // 返回一个通用的 500 错误给前端

@@ -1,35 +1,41 @@
-use std::{cmp::Ordering, collections::HashMap, iter::zip, sync::Arc};
-
-use chrono::Utc;
-use serde_json::json;
-use tackle_box::contracts::payloads_v1::{
+use std::sync::Arc;
+use tackle_box::contracts::payloads::{
     GetGameTypeResponse, GetMatchResponse, GetOnlineMatchResponse, GetParticipantsResponse,
-    NewMatchPayload, TurnLogResponse,
+    MatchStatus, NewMatchPayload, TurnLogResponse,
 };
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 use crate::{
     api::error::AppError,
-    core::orchestrator::{GameSettlement, OrchestratorService, TurnLog},
+    core::core::CoreMessage,
     repo::{
         agents::AgentRepo,
         game_type::GameTypeRepo,
-        matches::{GetMatchDTO, MatchRepo, MatchStatus, NewMatchDTO},
+        matches::{MatchRepo, NewMatchDTO},
         participation::ParticipationRepo,
-        turns::{NewTurnDTO, TurnRepo},
+        turns::TurnRepo,
         users::UserRepo,
     },
 };
 
-pub struct MatchService {
+struct Repos {
     pub gametype_repo: Arc<GameTypeRepo>,
     pub user_repo: Arc<UserRepo>,
     pub agent_repo: Arc<AgentRepo>,
     pub match_repo: Arc<MatchRepo>,
     pub turn_repo: Arc<TurnRepo>,
     pub participation_repo: Arc<ParticipationRepo>,
-    pub orchestrator_service: Arc<OrchestratorService>,
+}
+
+struct Senders {
+    pub core_tx: Sender<CoreMessage>,
+}
+
+pub struct MatchService {
+    // pub orchestrator_service: Arc<OrchestratorService>,
+    repos: Repos,
+    senders: Senders,
 }
 
 impl MatchService {
@@ -40,40 +46,24 @@ impl MatchService {
         match_repo: Arc<MatchRepo>,
         turn_repo: Arc<TurnRepo>,
         participation_repo: Arc<ParticipationRepo>,
-        orchestrator_service: Arc<OrchestratorService>,
+        core_tx: Sender<CoreMessage>,
+        // orchestrator_service: Arc<OrchestratorService>,
     ) -> Self {
         Self {
-            gametype_repo,
-            user_repo,
-            agent_repo,
-            match_repo,
-            turn_repo,
-            participation_repo,
-            orchestrator_service,
+            repos: Repos {
+                gametype_repo,
+                user_repo,
+                agent_repo,
+                match_repo,
+                turn_repo,
+                participation_repo,
+            }, // orchestrator_service,
+            senders: Senders { core_tx },
         }
     }
 
-    pub async fn get_match(&self, match_name: &String) -> Result<GetMatchResponse, AppError> {
-        let one_match = self.match_repo.get_match(&match_name).await?;
-
-        let status = match one_match.status {
-            MatchStatus::Cancelled => "Cancelled".to_string(),
-            MatchStatus::Completed => "Completed".to_string(),
-            MatchStatus::Pending => "Pending".to_string(),
-            MatchStatus::Running => "Running".to_string(),
-        };
-
-        let one_match = GetMatchResponse {
-            id: one_match.match_id,
-            name: match_name.clone(),
-            game_type: one_match.game_type,
-            total_games: one_match.total_games,
-            creater_name: one_match.creater_username,
-            winner_agent_name: one_match.winner_agent_readable_name,
-            start_time: one_match.start_time,
-            end_time: one_match.end_time,
-            status,
-        };
+    pub async fn get_match(&self, match_id: Uuid) -> Result<GetMatchResponse, AppError> {
+        let one_match = self.repos.match_repo.get_match(match_id).await?;
         Ok(one_match)
     }
 
@@ -81,39 +71,15 @@ impl MatchService {
         &self,
         _user_id: Uuid,
     ) -> Result<Vec<GetOnlineMatchResponse>, AppError> {
-        let matches = self.match_repo.get_online_matches().await?;
-        let matches: Vec<GetOnlineMatchResponse> = matches
-            .into_iter()
-            .map(|m| GetOnlineMatchResponse {
-                match_id: m.match_id,
-                match_name: m.readable_match_name,
-                creater_name: m.creater_username,
-                total_games: m.total_games,
-                game_type: m.game_type,
-                with_password: m.password.is_some(),
-                start_time: m.start_time.to_string(),
-                status: m.status.into(),
-            })
-            .collect();
+        let matches = self.repos.match_repo.get_online_matches().await?;
         Ok(matches)
     }
 
-    pub async fn get_my_matches(&self, user_id: Uuid) -> Result<Vec<GetMatchResponse>, AppError> {
-        let matches = self.match_repo.get_matches(user_id).await?;
-        let matches: Vec<GetMatchResponse> = matches
-            .into_iter()
-            .map(|m| GetMatchResponse {
-                id: m.match_id,
-                name: m.match_name_base,
-                creater_name: m.creater_username,
-                total_games: m.total_games,
-                game_type: m.game_type,
-                winner_agent_name: m.winner_agent_readable_name,
-                start_time: m.start_time,
-                end_time: m.end_time,
-                status: m.status.into(),
-            })
-            .collect();
+    pub async fn get_my_joined_matches(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<GetMatchResponse>, AppError> {
+        let matches = self.repos.match_repo.get_my_joined_matches(user_id).await?;
         Ok(matches)
     }
 
@@ -121,144 +87,111 @@ impl MatchService {
         &self,
         user_id: Uuid,
         one_match: NewMatchPayload,
-    ) -> Result<Uuid, AppError> {
+    ) -> Result<(), AppError> {
         let NewMatchPayload {
             name,
-            game_type,
+            game_type_id,
             total_games,
-            with_agent_names,
+            with_agent_ids,
             password,
         } = one_match;
 
         let one_match = NewMatchDTO {
             name: name.clone(),
-            game_type,
+            game_type_id,
             total_games,
             creater_id: user_id,
-            password,
+            password: password.clone(),
         };
-        let match_id = self.match_repo.new_match(one_match).await?;
-        for agent_name in &with_agent_names {
-            self.join_match(user_id, &name, agent_name).await?;
-        }
-        Ok(match_id)
+        let match_id = self.repos.match_repo.new_match(one_match).await?;
+        self.join_match(user_id, match_id, with_agent_ids, password)
+            .await?;
+        Ok(())
     }
 
     pub async fn join_match(
         &self,
         user_id: Uuid,
-        match_name: &String,
-        agent_name: &String,
+        match_id: Uuid,
+        agent_ids: Vec<Uuid>,
+        password: Option<String>,
     ) -> Result<(), AppError> {
-        let one_match = self.match_repo.get_match(match_name).await?;
+        let one_match = self.repos.match_repo.get_match(match_id).await?;
         let match_id = one_match.match_id;
-        let match_status: MatchStatus = self.match_repo.get_match_status(match_id).await?;
+        let match_status: MatchStatus = self.repos.match_repo.get_match_status(match_id).await?;
         if match_status != MatchStatus::Pending {
             return Err(AppError::Internal(
                 "match is not pending, cannot join".to_string(),
             ));
         }
+        if password != one_match.password {
+            return Err(AppError::Internal("error password".to_string()));
+        }
+        let join_agents_len = agent_ids.len() as i32;
 
-        let agent_id = self
-            .agent_repo
-            .get_agent_id_by_name(user_id, &agent_name)
+        let counts = self
+            .repos
+            .participation_repo
+            .count_participants(match_id)
             .await?;
-
-        let exists = self
-            .orchestrator_service
-            .exists_agent_connection(agent_id)
-            .await?;
-
-        if exists {
-            self.participation_repo
-                .insert_participant(match_id, agent_id)
-                .await?;
-            let count = self.participation_repo.count_participants(match_id).await?;
-            if count == 2 {
-                let GetMatchDTO {
-                    game_type,
-                    total_games,
-                    ..
-                } = self.match_repo.get_match_by_id(match_id).await?;
-                let agent_ids = self.participation_repo.get_participants(match_id).await?;
-                let match_handle = self
-                    .orchestrator_service
-                    .run_game(match_id, game_type, total_games, agent_ids)
+        if counts + join_agents_len > one_match.max_slots {
+            return Err(AppError::Internal(
+                "exceeding max slots for this match".to_string(),
+            ));
+        } else {
+            for agent_id in agent_ids {
+                self.repos
+                    .participation_repo
+                    .insert_participant(match_id, agent_id)
                     .await?;
-
-                let match_repo = self.match_repo.clone();
-                let agent_repo = self.agent_repo.clone();
-                let turn_repo = self.turn_repo.clone();
-
-                let handle: JoinHandle<Result<(), AppError>> = tokio::spawn(async move {
-                    if let Ok(Ok(game_settlement)) = match_handle.await {
-                        let GameSettlement {
-                            match_id,
-                            agent_ids,
-                            connections,
-                            logs,
-                        } = game_settlement;
-
-                        let mut score_map: HashMap<Uuid, f32> =
-                            agent_ids.iter().map(|&id| (id, 0.0)).collect();
-
-                        let mut tx = match_repo.get_transaction().await?;
-                        for (i_turn, log) in logs.into_iter().enumerate() {
-                            let TurnLog {
-                                logs: turn_log,
-                                payoffs,
-                            } = log;
-                            let score_deltas: HashMap<Uuid, f32> =
-                                HashMap::from_iter(zip(agent_ids.clone(), payoffs));
-
-                            for (id, score) in &score_deltas {
-                                score_map.entry(*id).and_modify(|s| *s += score);
-                            }
-
-                            let turn = NewTurnDTO {
-                                match_id,
-                                i_turn: i_turn as i32,
-                                log: json!(turn_log),
-                                score_deltas: json!(score_deltas),
-                                start_time: Utc::now(),
-                                end_time: Utc::now(),
-                            };
-                            turn_repo.insert_turn(&mut tx, turn).await?;
-                        }
-                        let winner_id = score_map
-                            .iter()
-                            .max_by(|&(_, &v1), &(_, &v2)| {
-                                v1.partial_cmp(&v2).unwrap_or(Ordering::Equal)
-                            })
-                            .map(|(k, _)| *k);
-                        match winner_id {
-                            Some(winner_id) => {
-                                for agent_id in agent_ids {
-                                    if winner_id == agent_id {
-                                        agent_repo.agent_won(&mut tx, agent_id).await?
-                                    } else {
-                                        agent_repo.agent_failed(&mut tx, agent_id).await?
-                                    }
-                                }
-                            }
-                            None => {
-                                for agent_id in agent_ids {
-                                    agent_repo.agent_failed(&mut tx, agent_id).await?;
-                                }
-                            }
-                        };
-
-                        match_repo
-                            .update_match_final_status(&mut tx, match_id, winner_id)
-                            .await?;
-                        tx.commit().await.unwrap();
-                    }
-
-                    Ok(())
-                });
             }
         }
 
+        if counts + join_agents_len >= one_match.min_slots {
+            let GetMatchResponse {
+                game_type_name,
+                total_games,
+                ..
+            } = self.repos.match_repo.get_match(match_id).await?;
+            let agent_ids = self
+                .repos
+                .participation_repo
+                .get_participants(match_id)
+                .await?
+                .iter()
+                .map(|p| p.agent_id)
+                .collect();
+            self.start_match(
+                match_id,
+                agent_ids,
+                "rlcard".to_string(),
+                game_type_name,
+                total_games,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn start_match(
+        &self,
+        match_id: Uuid,
+        agent_ids: Vec<Uuid>,
+        sponsor: String,
+        game_type: String,
+        total_games: i32,
+    ) -> Result<(), AppError> {
+        self.senders
+            .core_tx
+            .send(CoreMessage::MatchStart {
+                match_id,
+                agent_ids,
+                sponsor,
+                game_type,
+                total_games,
+            })
+            .await?;
         Ok(())
     }
 
@@ -267,71 +200,27 @@ impl MatchService {
     pub async fn get_match_logs(
         &self,
         user_id: Uuid,
-        match_name: &String,
+        match_id: Uuid,
     ) -> Result<Vec<TurnLogResponse>, AppError> {
-        let turns = self.turn_repo.get_turns_by_match_name(match_name).await?;
-        Ok(turns
-            .into_iter()
-            .map(|turn| TurnLogResponse {
-                id: turn.match_id,
-                match_name: turn.readable_match_name,
-                log: turn.log,
-                i_turn: turn.i_turn,
-                score_deltas: turn.score_deltas,
-            })
-            .collect())
+        let turns = self.repos.turn_repo.get_turns(match_id).await?;
+        Ok(turns)
     }
 
     pub async fn get_participants(
         &self,
         _user_id: Uuid,
-        match_name: &String,
+        match_id: Uuid,
     ) -> Result<Vec<GetParticipantsResponse>, AppError> {
         let participants = self
+            .repos
             .participation_repo
-            .get_participants_by_match_name(match_name)
+            .get_participants(match_id)
             .await?;
-        let participants = participants
-            .into_iter()
-            .map(|agent_name| GetParticipantsResponse {
-                match_name: match_name.clone(),
-                agent_name: agent_name.clone(),
-            })
-            .collect();
         Ok(participants)
     }
 
     pub async fn get_gametypes(&self) -> Result<Vec<GetGameTypeResponse>, AppError> {
-        let game_types = self.gametype_repo.get_geme_types().await?;
-        let game_types = game_types
-            .into_iter()
-            .map(|game_type| GetGameTypeResponse {
-                game_type: game_type.name,
-                description: game_type.description,
-            })
-            .collect();
+        let game_types = self.repos.gametype_repo.get_game_types().await?;
         Ok(game_types)
-    }
-
-    pub async fn settle_match(&self, match_id: Uuid) -> Result<(), AppError> {
-        let mut tx = self.match_repo.get_transaction().await?;
-        let all_turns = self.turn_repo.get_all_turns(&mut tx, match_id).await?;
-
-        let mut total_score = HashMap::new();
-        for turn in all_turns {
-            let score_deltas: HashMap<Uuid, i32> = serde_json::from_value(turn.score_deltas)?;
-            for (agent_id, delta) in score_deltas {
-                total_score
-                    .entry(agent_id)
-                    .and_modify(|s| *s += delta)
-                    .or_insert(0);
-            }
-        }
-        let winner_id = total_score.iter().max_by_key(|&(_, &v)| v).map(|(k, _)| *k);
-
-        self.match_repo
-            .update_match_final_status(&mut tx, match_id, winner_id)
-            .await?;
-        Ok(())
     }
 }
